@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Place Autocomplete</title>
+    <meta name="viewport" content="initial-scale=1.0, user-scalable=no">
+    <meta charset="utf-8">
+    <style>
+      /* Always set the map height explicitly to define the size of the div
+       * element that contains the map. */
+      #map {
+        height: 100%;
+      }
+      /* Optional: Makes the sample page fill the window. */
+      html, body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+      }
+      #description {
+        font-family: Roboto;
+        font-size: 15px;
+        font-weight: 300;
+      }
+
+      #infowindow-content .title {
+        font-weight: bold;
+      }
+
+      #infowindow-content {
+        display: none;
+      }
+
+      #map #infowindow-content {
+        display: inline;
+      }
+
+      #title {
+        color: #fff;
+        background-color: #4d90fe;
+        font-size: 25px;
+        font-weight: 500;
+        padding: 6px 12px;
+      }
+      #user-input-panel {
+        width: 30%;
+        float: left;
+      }
+      #distance {
+
+      }
+      form {
+        padding: 20px;
+      }
+      .requestItem {
+        height: 50px;
+        cursor: pointer;
+      }
+      .requestItem span {
+        font-size: 120%;
+      }
+    </style>
+    <link rel="stylesheet" href="css/bootstrap.min.css">
+    <link rel="stylesheet" href="css/bootstrap-datetimepicker.min.css">
+
+</head>
+<body>
+<script src="js/jquery-3.2.1.min.js"></script>
+<script src="js/bootstrap-datetimepicker.min.js"></script>
+<script src="js/bootstrap.js"></script>
+<div id="user-input-panel">
+    <form class="form-group">
+    <h2>Offer a ride</h2>
+    <input id="refreshButton" onclick="refreshFromServer(); return false;" type="submit" value="Refresh map" class="btn btn-primary">
+    <br/>
+    <br/>
+    <div id="result-list"></div>
+
+    <br/>
+    <label for="price">Price:</label>
+    <input id="price" type="text" class="form-control">
+    <br/>
+    <label for="phone">Telephone number:</label>
+    <input id="phone" type="text" class="form-control">
+    <br/>
+    <label for="email">Email:</label>
+    <input id="email" type="email" class="form-control">
+    <br/>
+    <input id="submitButton" onclick="offer(); return false;" type="submit" value="Create an offer" class="btn btn-primary">
+    <br/>
+    </form>
+    <h3 id="offerCreated"></h3>
+</div>
+<div id="map"></div>
+<div id="infowindow-content">
+    <img src="" width="16" height="16" id="place-icon">
+    <span id="place-name"  class="title"></span><br>
+    <span id="place-address"></span>
+</div>
+
+<script>
+
+var map;
+var directionsService;
+
+var data = [];
+
+function refreshFromServer() {
+    var bounds = map.getBounds();
+    var boundsData = {
+        latNorth: bounds.getNorthEast().lat(),
+        latSouth: bounds.getSouthWest().lat(),
+        lonEast: bounds.getNorthEast().lng(),
+        lonWest: bounds.getSouthWest().lng()
+    };
+    $.postJSON('http://localhost:8087/rest/places/search', boundsData, function(requests, status) {
+        console.log(requests);
+        data = [];
+        for (i = 0; i < requests.length; i++) {
+            var request = requests[i];
+            data.push({
+                requestId: request.requestId,
+                origin: {
+                    lat: request.placeFrom.lat,
+                    lng: request.placeFrom.lon
+                },
+                destination: {
+                    lat: request.placeTo.lat,
+                    lng: request.placeTo.lon
+                },
+                peopleCount: request.peopleCount,
+                requesteTime: request.requesteTime
+            });
+        }
+        refresh();
+    });
+};
+
+var markers=[];
+function refresh() {
+    if (markers) {
+        $('#result-list').empty();
+        for (i = 0; i < markers.length; i++) {
+            markers[i].setMap(null);
+        }
+    }
+    for (i = 0; i < data.length; i++) {
+        var originGps = data[i].origin;
+        var destinationGps = data[i].destination;
+        var requestId = data[i].requestId;
+        var peopleCount = data[i].peopleCount;
+        var requesteTime = data[i].requesteTime;
+
+        markers.push(createMarker(originGps));
+        markers.push(createInvisibleEndMarker(destinationGps));
+
+        createResultRow(requestId, originGps, destinationGps, peopleCount, requesteTime);
+
+    }
+};
+
+
+var directionsDisplay;
+var endMarker;
+var activerequestId;
+function drawPath(requestId) {
+    if (activerequestId && activerequestId == requestId) {
+        return;
+    };
+
+    console.log("drawing path for requestId: " + requestId);
+
+    activerequestId = requestId;
+    var item;
+    for (i = 0; i < data.length; i++) {
+        if (data[i].requestId == requestId) {
+            item = data[i];
+            break;
+        }
+    }
+    var originGps = item.origin;
+    var destinationGps = item.destination;
+    var requestId = item.requestId;
+
+    if (endMarker) {
+        endMarker.setMap(null);
+    }
+
+    endMarker = createMarker(destinationGps);
+
+    var request = {
+        origin: originGps,
+        destination: destinationGps,
+        travelMode: google.maps.TravelMode.DRIVING
+    };
+
+    directionsDisplay.setMap(null);
+    directionsDisplay.setMap(map);
+    directionsService.route(request, function (response, status) {
+        if (status == google.maps.DirectionsStatus.OK) {
+            directionsDisplay.setDirections(response);
+        } else {
+            console.log("error directionsService");
+        }
+    });
+}
+
+function createResultRow(requestId, originGps, destinationGps, peopleCount, requesteTime) {
+    var service = new google.maps.DistanceMatrixService();
+    service.getDistanceMatrix({
+        origins: [originGps],
+        destinations: [destinationGps],
+        travelMode: google.maps.TravelMode.DRIVING,
+        unitSystem: google.maps.UnitSystem.METRIC,
+        avoidHighways: false,
+        avoidTolls: false
+    }, function (response, status) {
+        if (status == google.maps.DistanceMatrixStatus.OK && response.rows[0].elements[0].status != "ZERO_RESULTS") {
+            var distance = response.rows[0].elements[0].distance.text;
+            var duration = response.rows[0].elements[0].duration.text;
+            console.log("Distance: " + distance);
+            console.log("Duration: " + duration);
+            var people = "";
+            if (peopleCount) {
+                if (peopleCount == 1) {
+                    people = "1 person";
+                } else {
+                    people = peopleCount + " people";
+                }
+            }
+            var dateTime = new Date(requesteTime).toLocaleString();
+
+            $('#result-list').append("<div id='request-item-" + requestId + "' class='requestItem' onclick='selectRequest(\"" + requestId + "\")'><img src='img/search_icon.png' onmousemove='drawPath(\"" + requestId + "\");'><span>" + distance + "</span>, <span>" + duration + "</span>, <span>" + people + "</span><br/><span>" + dateTime + "</span></div>");
+        }
+    });
+}
+
+function offer() {
+    if(!selectedRequest) {
+        return;
+    }
+    var data = {
+        requestId: selectedRequest.requestId,
+        price: parseInt($('#price').val()),
+        phoneNumber: $('#phone').val(),
+        email: $('#email').val()
+    };
+    $.putJSON("http://localhost:8085/rest/transport/offer", data, function(data, status){
+        console.log(data);
+        window.location.href = "./view-offer.html#" + (data.offerId);
+    });
+};
+
+var selectedRequest;
+function selectRequest(requestId) {
+    for (i = 0; i < data.length; i++) {
+        if (data[i].requestId == requestId) {
+            item = data[i];
+            selectedRequest = item;
+            $('#request-item-' + requestId).css('background-color', 'lightblue');
+        } else {
+            $('#request-item-' + data[i].requestId).css('background-color', '');
+        }
+    }
+}
+
+function createInvisibleEndMarker(position) {
+    var marker = new google.maps.Marker({
+      map: map,
+      anchorPoint: new google.maps.Point(0, -29)
+    });
+    marker.setPosition(position);
+    marker.setVisible(false);
+
+    var current_bounds = map.getBounds();
+      var marker_pos = marker.getPosition();
+
+      if( !current_bounds.contains( marker_pos ) ){
+        var new_bounds = current_bounds.extend( marker_pos );
+        map.fitBounds( new_bounds );
+      }
+    return marker;
+};
+
+function createMarker(position) {
+    var marker = new google.maps.Marker({
+      map: map,
+      anchorPoint: new google.maps.Point(0, -29)
+    });
+    marker.setPosition(position);
+    marker.setVisible(true);
+
+    var current_bounds = map.getBounds();
+      var marker_pos = marker.getPosition();
+
+      if( !current_bounds.contains( marker_pos ) ){
+        var new_bounds = current_bounds.extend( marker_pos );
+        map.fitBounds( new_bounds );
+      }
+    return marker;
+};
+
+$('.datepicker').datetimepicker({
+    format: 'yyyy-mm-dd hh:ii'
+});
+
+
+$.postJSON = function(url, data, callback) {
+    return $.ajax({
+        'type': 'POST',
+        'url': url,
+        'contentType': 'application/json',
+        'data': JSON.stringify(data),
+        'dataType': 'json',
+        'success': callback,
+        headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        }
+    });
+};
+
+$.putJSON = function(url, data, callback) {
+    return $.ajax({
+        'type': 'PUT',
+        'url': url,
+        'contentType': 'application/json',
+        'data': JSON.stringify(data),
+        'dataType': 'json',
+        'success': callback,
+        headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        }
+    });
+};
+
+
+      // This example requires the Places library. Include the libraries=places
+      // parameter when you first load the API. For example:
+      // <script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&libraries=places">
+
+      function initMap() {
+        map = new google.maps.Map(document.getElementById('map'), {
+          center: {lat: 50.0755, lng: 14.4378},
+          zoom: 10
+        });
+        var types = document.getElementById('type-selector');
+        var strictBounds = document.getElementById('strict-bounds-selector');
+
+
+        google.maps.event.addListener(map, "click", function (e) {
+            //lat and lng is available in e object
+            var latLng = e.latLng;
+            console.log(latLng);
+        });
+
+        directionsService = new google.maps.DirectionsService();
+        directionsDisplay = new google.maps.DirectionsRenderer({ 'draggable': false, 'preserveViewport': true});
+        directionsDisplay.setMap(map);
+
+        <!--refreshFromServer();-->
+      };
+
+
+
+
+</script>
+<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBERgplsRjMcAkFoTcFVeq5Q7--TKxLVPA&libraries=places&callback=initMap"
+        async defer></script>
+</body>
+</html>
